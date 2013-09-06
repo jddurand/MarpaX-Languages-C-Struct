@@ -10,6 +10,7 @@ use File::Temp;
 use SUPER;
 use Scalar::Util qw/blessed refaddr/;
 use IO::Handle;
+use Config;
 
 autoflush STDOUT 1;
 
@@ -19,7 +20,7 @@ autoflush STDOUT 1;
 
 =head1 DESCRIPTION
 
-This module is dissecting C structure, providing in particular L<pack>/L<unpack> helpers. It is inheriting from L<ExtUtils::CBuilder>, so please refer to this module for the new method. This module makes the assumption that the underlying compiler supports the -E flag (which is always the case AFAIK, even with cl compiler).
+This module is dissecting C structure, providing in particular L<pack>/L<unpack> helpers, and structure members accessors. It is inheriting from L<ExtUtils::CBuilder>, so please refer to this module for the new method. This module makes the assumption that the underlying compiler supports the -E flag (which is always the case AFAIK, even with cl compiler).
 
 =head1 SYNOPSIS
 
@@ -28,6 +29,7 @@ This module is dissecting C structure, providing in particular L<pack>/L<unpack>
     my %config = ();          # C.f. ExtUtils::CBuilder->new(%config)
     my $b = MarpaX::Languages::C::Struct->new(%config);
     $b->parse("#include <stdlib.h>")
+    my $ast = $b->value;
 
 =head1 SUBROUTINES/METHODS
 
@@ -59,18 +61,66 @@ sub parse {
   my $tmpc = File::Temp->new( UNLINK => 0, SUFFIX => '.c' );
   print $tmpc $source;
   close($tmpc);
-  print "==> $tmpc\n";
 
   my $tmpo = File::Temp->new( UNLINK => 0, SUFFIX => '.txt' );
   close($tmpo);
 
   my $output = $self->compile(source => $tmpc->filename, object_file => $tmpo->filename, extra_compiler_flags => '-E');
-  print "==> $output\n";
 
   open(my $txt, '<', $tmpo->filename);
-  $self->{_ast} = MarpaX::Languages::C::AST->new()->parse(\do{ local $/; <$txt>})->value;
+  my $content = do { local $/; <$txt> };
+  close($txt);
+  $self->{_ast} = MarpaX::Languages::C::AST->new()->parse(\$content);
 
   return $self;
+}
+
+=head1 typedefs($self);
+
+Get the list of typedefs at file-scope level. In array context, returns the list of typedefs. In scalar context, return the number of typedefs.
+
+=cut
+
+sub typedefs {
+  my ($self) = @_;
+
+  return keys %{$self->{_ast}->scope->typedefPerScope->[0]};
+}
+
+=head1 ast($self);
+
+Get the AST of the parsed source. This is a MarpaX::Languages::C::AST object.
+
+=cut
+
+sub ast {
+  my ($self) = @_;
+
+  return $self->{_ast}->value;
+}
+
+=head1 enums($self);
+
+Get the list of enums. In array context, returns the list of enums. In scalar context, return the number of enums.
+
+=cut
+
+sub enums {
+  my ($self) = @_;
+
+  return keys %{$self->{_ast}->scope->enumAnyScope};
+}
+
+=head1 typedef2type($self);
+
+Converts a typedef to its original type, i.e. a native type or an aggregate (i.e. struct) type. Conversion is limited to file-scope translation units of C grammar.
+
+=cut
+
+sub typedef2type {
+  my ($self) = @_;
+
+  return keys %{$self->{_ast}->{_scope}->typedefPerScope->[0]};
 }
 
 =head1 struct2stubs($self, $structname)
