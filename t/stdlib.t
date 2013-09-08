@@ -11,13 +11,18 @@ BEGIN {
 my $cSourceCode = do { local $/; <DATA> };
 my $b = MarpaX::Languages::C::Struct->new();
 $b->parse($cSourceCode);
-my $ntypedef = $b->typedefs;
-ok(defined($ntypedef), "There are $ntypedef typedefs at file-scope level");
-my @typedef = $b->typedefs;
-my $nenum = $b->enums;
-ok(defined($nenum), "There are $nenum enums");
-my @enum = $b->enums;
+my $typedefs = $b->typedefs;
+ok(defined($typedefs), "There are " . int(keys %{$typedefs}) . " typedef at file-scope level: " . join(', ', keys %{$typedefs}));
+my $enums = $b->enums;
+ok(defined($typedefs), "There are " . int(keys %{$enums}) . " enum at file-scope level: " . join(', ', keys %{$enums}));
 use Data::Dumper;
-print Dumper($b->ast);
+print Dumper($b->{_value});
+$b->resolveType('myfunc');
 __DATA__
-#include <stdlib.h>
+typedef struct mystruct_ {
+    int i;
+    char p[];
+} s_mystruct_;
+typedef char (*myfunc)(int i, double j);
+/* #include <stdlib.h> */
+
