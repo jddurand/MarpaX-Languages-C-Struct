@@ -60,7 +60,7 @@ sub new {
 
   $self->{_ast} = undef;
   $self->{_value} = undef;
-  $self->{_value0} = undef;
+  $self->{_typedef} = {};
 
   return $self;
 }
@@ -88,7 +88,6 @@ sub parse {
   close($txt);
   $self->{_ast} = MarpaX::Languages::C::AST->new()->parse(\$content);
   $self->{_value} = ${$self->ast->value};
-  $self->{_value0} = $self->_flat_list_first_scope_only;
 
   return $self;
 }
@@ -230,21 +229,38 @@ sub _resolveDeclarator {
     # Build the full declarator
     #
     my $fullDeclarator = '';
+    my $startIndexInFullDeclarator = undef;
     MarpaX::Languages::C::AST::Util::Data::Find->new
 	(
 	 callback => sub {
-	     my ($self, $fullDeclaratorp, $o) = @_;
+	     my ($self, $fullDeclaratorp, $startIndexInFullDeclaratorp, $o) = @_;
+	     if (defined($o) && blessed($o) && refaddr($o) == $directDeclaratorIdentifierAddr) {
+		 #
+		 # Next entry will the IDENTIFIER
+		 # Putting it to a negative value is one way from several to
+		 # identify it has been initialized /now/.
+		 $startIndexInFullDeclarator = -length(${$fullDeclaratorp});
+	     }
 	     if (ref($o) eq 'ARRAY') {
 		 if ($o->[2] =~ /^\w/ && ${$fullDeclaratorp} =~ /\w$/) {
 		     ${$fullDeclaratorp} .= ' ';
+		     if (defined($startIndexInFullDeclarator) && $startIndexInFullDeclarator < 0) {
+			 #
+			 # Has just been initialized before
+			 #
+			 $startIndexInFullDeclarator--;
+		     }
+		 }
+		 if (defined($startIndexInFullDeclarator) && $startIndexInFullDeclarator < 0) {
+		     $startIndexInFullDeclarator = -$startIndexInFullDeclarator;
 		 }
 		 ${$fullDeclaratorp} .= $o->[2];
 	     }
 	 },
-	 callbackArgs => [ $self, \$fullDeclarator ],
+	 callbackArgs => [ $self, \$fullDeclarator, \$startIndexInFullDeclarator ],
 	)->process($parent);
 
-    return $fullDeclarator;
+    return ($fullDeclarator, $startIndexInFullDeclarator);
 }
 
 #
@@ -254,37 +270,51 @@ sub _resolveDeclarator {
 sub _resolveTypedef {
     my ($self, $typedef) = @_;
 
-    my $data = $self->typedefs->{$typedef};
-    my ($offset, $length) = @{$data};
+    if (! defined($self->{_typedef}->{$typedef})) {
+	my $data = $self->typedefs->{$typedef};
+	my ($offset, $length) = @{$data};
 
-    #
-    # Search this entry in the AST. Per def this is a directDeclaratorIdentifier.
-    #
-    my $directDeclaratorIdentifierAddr = 0;
-    if (! MarpaX::Languages::C::AST::Util::Data::Find->new
-	(
-	 wanted => sub {
-	     my ($self, $offset, $length, $o) = @_;
-	     my $rc = 0;
-	     if ($self->_wantBlessed('C::AST::directDeclaratorIdentifier', $o)) {
-		 my $IDENTIFIER = $o->[0];
-		 $rc = ($IDENTIFIER->[0] == $offset && $IDENTIFIER->[1] == $length);
-	     }
-	     return $rc;
-	 },
-	 wantedArgs => [ $self, $offset, $length ],
-	 callback => sub {
-	     my ($self, $directDeclaratorIdentifierAddrp, $o) = @_;
-	     ${$directDeclaratorIdentifierAddrp} = refaddr($o);
-	 },
-	 callbackArgs => [ $self, \$directDeclaratorIdentifierAddr ],
-	)->process($self->value)) {
-	croak "Cannot find typedef $typedef in the AST parse tree value";
+	#
+	# Search this entry in the AST. Per def this is a directDeclaratorIdentifier.
+	#
+	my $directDeclaratorIdentifierAddr = 0;
+	if (! MarpaX::Languages::C::AST::Util::Data::Find->new
+	    (
+	     wanted => sub {
+		 my ($self, $offset, $length, $o) = @_;
+		 my $rc = 0;
+		 if ($self->_wantBlessed('C::AST::directDeclaratorIdentifier', $o)) {
+		     my $IDENTIFIER = $o->[0];
+		     $rc = ($IDENTIFIER->[0] == $offset && $IDENTIFIER->[1] == $length);
+		 }
+		 return $rc;
+	     },
+	     wantedArgs => [ $self, $offset, $length ],
+	     callback => sub {
+		 my ($self, $directDeclaratorIdentifierAddrp, $o) = @_;
+		 ${$directDeclaratorIdentifierAddrp} = refaddr($o);
+	     },
+	     callbackArgs => [ $self, \$directDeclaratorIdentifierAddr ],
+	    )->process($self->value)) {
+	    croak "Cannot find typedef $typedef in the AST parse tree value";
+	}
+
+	my ($fullDeclarator, $startIndexInFullDeclarator) = $self->_resolveDeclarator($directDeclaratorIdentifierAddr, $typedef);
+
+	print "Typedef resolving of      : $typedef\n";
+	print "Full declarator           : $fullDeclarator\n";
+	print "startIndexInFullDeclarator: $startIndexInFullDeclarator\n";
+
+	$self->{_typedef}->{$typedef} = [ fullDeclarator => $fullDeclarator,
+					  startIndexInFullDeclarator => $startIndexInFullDeclarator ];
+    } else {
+
+	my ($fullDeclarator, $startIndexInFullDeclarator) = @{$self->{_typedef}->{$typedef}};
+	print "Typedef resolving of (cached)      : $typedef\n";
+	print "Full declarator (cached)           : $fullDeclarator\n";
+	print "startIndexInFullDeclarator (cached): $startIndexInFullDeclarator\n";
+
     }
-
-    my $fullDeclarator = $self->_resolveDeclarator($directDeclaratorIdentifierAddr, $typedef);
-
-    print "Full declarator: $fullDeclarator\n";
 }
 
 sub _wantBlessed {
@@ -295,38 +325,6 @@ sub _wantBlessed {
 
 sub _blessed {
   return blessed($_[0]) || '';
-}
-
-sub _flat_list_first_scope_only {
-    my ($self) = @_;
-
-    my $scope = 0;
-    my @rc = ();
-
-    MarpaX::Languages::C::AST::Util::Data::Find->new
-	(
-	 wanted => sub {
-	     my ($self, $scopep, $o) = @_;
-	     if (! blessed($o) && ref($o) eq 'ARRAY') {
-		 my $lexeme = $o->[2];
-		 if ($lexeme eq '{' || $lexeme eq '(') {
-		     ++${$scopep};
-		 } elsif ($lexeme eq ')' || $lexeme eq '}') {
-		     --${$scopep};
-		 }
-	     }
-	     return (${$scopep} == 0);
-	 },
-	 wantedArgs => [ $self, \$scope ],
-	 callback => sub {
-	     my ($self, $rcp, $o) = @_;
-	     if (! blessed($o) && ref($o) eq 'ARRAY') {
-		 push(@{$rcp}, $o);
-	     }
-	 },
-	 callbackArgs => [ $self, \@rc ],
-	)->process($self->value);
-    return \@rc;
 }
 
 sub _resolveNativeType {
